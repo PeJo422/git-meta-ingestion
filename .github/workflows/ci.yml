@@ -1,0 +1,36 @@
+name: metadata
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+      - run: python src/validate.py
+
+  deploy:
+    # Körs bara efter merge till main, och bara om validate är grön.
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      # Kräver ODBC Driver 18 for SQL Server (finns på ubuntu-latest).
+      - run: python src/deploy.py
+        env:
+          METADATA_DB_CONNECTION_STRING: ${{ secrets.METADATA_DB_CONNECTION_STRING }}

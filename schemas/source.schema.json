@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["id", "type", "connection"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "type": { "type": "string", "enum": ["sql_server"] },
+    "connection": {
+      "type": "object",
+      "required": ["ref"],
+      "additionalProperties": false,
+      "properties": {
+        "ref": { "type": "string", "minLength": 1 }
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeout": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}
