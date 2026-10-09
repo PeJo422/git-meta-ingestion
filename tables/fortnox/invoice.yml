@@ -1,0 +1,17 @@
+id: fortnox.invoice
+
+source: fortnox
+
+schema: dbo
+table: Invoice
+
+query: sql/fortnox/invoice.sql
+
+load:
+  type: incremental
+  watermark: ModifiedDate
+
+keys:
+  - InvoiceId
+
+enabled: true

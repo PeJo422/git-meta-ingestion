@@ -1,0 +1,16 @@
+id: fortnox.customer
+
+source: fortnox
+
+schema: dbo
+table: Customer
+
+query: sql/fortnox/customer.sql
+
+load:
+  type: full
+
+keys:
+  - CustomerId
+
+enabled: true

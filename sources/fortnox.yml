@@ -1,0 +1,8 @@
+id: fortnox
+type: sql_server
+
+connection:
+  ref: fortnox-sql
+
+defaults:
+  timeout: 3600
