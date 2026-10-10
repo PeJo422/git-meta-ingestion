@@ -18,7 +18,7 @@ sql/**/*.sql  ┘                                                  metadata.*   
 | `schemas/*.json` | JSON Schema för YAML-filerna |
 | `src/validate.py` | Validerar hela repot |
 | `src/deploy.py` | Upsertar till Azure SQL |
-| `database/create_metadata_tables.sql` | Skapar registret (körs en gång, kan köras om) |
+| `database/schema.sql` | Databasschemat. `deploy.py` kör filen vid varje deploy |
 
 **`metadata.Source` och `metadata.IngestionObject` ägs av deploy-processen.** Skriv aldrig manuella INSERT/UPDATE där. Ändringen görs i Git och publiceras av pipelinen, annars skrivs den över vid nästa deploy.
 
@@ -92,9 +92,11 @@ PR kör bara validering. Deploy körs endast vid push till `main` och kräver se
 
 ## 6. Deploy
 
-Engångssetup: kör `database/create_metadata_tables.sql` mot Azure SQL.
+`python src/deploy.py` gör i ordning:
 
-`python src/deploy.py` validerar, läser all YAML + SQL och upsertar på `source.id` / `table.id`:
+1. Validerar hela repot och avbryter vid fel.
+2. Kör `database/schema.sql` (tål att köras om, skapar saknade tabeller och kolumner).
+3. Läser all YAML + SQL och upsertar på `source.id` / `table.id`:
 
 ```
 SOURCE fortnox ................................. unchanged
@@ -105,7 +107,8 @@ OBJECT fortnox.invoice ......................... created
 
 * Idempotent: samma Git-state två gånger ger `unchanged` och inga dubbletter.
 * `git_commit` uppdateras bara på rader som faktiskt ändrats, och visar därför commit som senast ändrade just den raden.
-* Allt körs i en transaktion.
+* Schema och upsert körs i samma transaktion. En deploy som misslyckas lämnar databasen som den var.
+* Två deployer körs aldrig samtidigt (`concurrency` i CI).
 * Deploy raderar aldrig. Finns ett objekt i registret men inte i Git skrivs en varning:
   ```
   WARNING:
@@ -117,11 +120,35 @@ OBJECT fortnox.invoice ......................... created
 
 Sätt `enabled: false` i tabell-YAML och skapa PR. ADF filtrerar på `enabled = 1`.
 
-## 8. Rollback
+## 8. Ändra tabellstrukturen (ny kolumn)
 
-`git revert <commit>`, PR, merge. Pipelinen validerar och deployar, och registret får samma innehåll som före den felaktiga ändringen. Ett objekt som skapades av den reverterade commiten finns kvar i registret (inget DELETE), så sätt `enabled: false` för det i stället för att ta bort filen.
+Gäller när `metadata.*` ska få en ny kolumn, till exempel `page_size` på `IngestionObject`. Allt görs i **en** PR:
 
-## 9. Static metadata vs runtime state
+1. `schemas/table.schema.json`: lägg fältet. Schemat tillåter inga okända fält, så validatorn avvisar det annars.
+2. `database/schema.sql`: lägg ett ALTER-block **längst ner**, och rör inte den befintliga `CREATE TABLE`:
+   ```sql
+   IF COL_LENGTH('metadata.IngestionObject', 'page_size') IS NULL
+       ALTER TABLE metadata.IngestionObject ADD page_size int NULL;
+   GO
+   ```
+   Kolumnen ska vara `NULL` eller ha `DEFAULT`, eftersom raderna redan finns. Nya och gamla miljöer kör samma ALTER-block och får därför samma schema.
+3. `src/deploy.py`: lägg `"page_size": t.get("page_size")` i `object_row()` (eller `source_row()`). Det är den enda platsen kolumner anges.
+4. Valfritt: valideringsregel i `validate.py`, exempel i en YAML-fil, och en rad i README-tabellen över YAML→kolumn.
+5. Efter merge: uppdatera ADF-lookupen att hämta kolumnen. Kolumnen är nullable och bryter därför inte ADF innan dess.
+
+Pipelinen kör schemat före upserten i samma transaktion, så koden kan aldrig köras mot en databas som saknar kolumnen.
+
+Byta namn på eller ta bort en kolumn görs i två PR:er. Först läggs den nya till och konsumenterna flyttas, och i en senare PR tas den gamla bort med en egen `ALTER TABLE ... DROP COLUMN`-rad. Annars slutar ADF fungera mellan deploy och pipelineändring.
+
+Valfria inställningar som bara en källtyp använder kan ligga under `defaults` i source-YAML. De sparas i `config_json` och kräver ingen ändring av schemat.
+
+**Behörighet:** deploy-identiteten behöver rätt att skapa och ändra tabeller i `metadata`-schemat, och skriva (inte skapa) i `runtime`. Ger du den inte DDL-rätt får du köra `schema.sql` manuellt före merge, men då är inte längre allt automatiserat.
+
+## 9. Rollback
+
+`git revert <commit>`, PR, merge. Pipelinen validerar och deployar, och registret får samma innehåll som före den felaktiga ändringen. Ett objekt som skapades av den reverterade commiten finns kvar i registret (inget DELETE), så sätt `enabled: false` för det i stället för att ta bort filen. Schemaändringar i `schema.sql` återställs inte av en revert (kolumner finns kvar), vilket är avsiktligt: en extra nullable kolumn skadar inte, medan en borttagen kolumn kan göra det.
+
+## 10. Static metadata vs runtime state
 
 | | `metadata.*` | `runtime.*` |
 |---|---|---|
@@ -169,5 +196,6 @@ ADF behöver bara läsa registret. Formatet innehåller inga ADF-begrepp, så en
 
 * Ingen automatisk radering ur registret, bara varning.
 * SQL valideras bara för att filen inte är tom och att `@watermark` finns vid incremental. Ingen SQL-parser.
-* `deploy.py` är testat med `--dry-run`, inte mot en riktig Azure SQL.
+* `deploy.py` är testat med `--dry-run` och med upsert-logiken mot SQLite, inte mot en riktig Azure SQL. Kör första deployen mot en testdatabas.
+* Det finns ingen migrationsmotor. `schema.sql` är en idempotent fil med ALTER-block, och kolumner tas bort för hand i en egen PR.
 * Bara `sql_server` som source-typ.

@@ -1,7 +1,11 @@
--- Skapar registret. Kan köras flera gånger.
+-- Databasschemat. deploy.py kör hela filen vid varje deploy, så den måste tåla att köras om.
+-- Batcher separeras med en rad som bara innehåller GO (deploy.py delar upp filen).
 --
 -- metadata.*  ägs av src/deploy.py och är en publicerad kopia av Git. Ändra aldrig manuellt.
--- runtime.*   ägs av ingestion-motorn (ADF). deploy.py läser och skriver aldrig här.
+-- runtime.*   ägs av ingestion-motorn (ADF). deploy.py skriver aldrig data här.
+--
+-- REGEL: ändra aldrig en befintlig CREATE TABLE. Nya kolumner läggs som ALTER-block
+-- längst ner i filen. Då tar nya och gamla miljöer exakt samma väg och kan inte glida isär.
 
 IF SCHEMA_ID('metadata') IS NULL EXEC('CREATE SCHEMA metadata');
 IF SCHEMA_ID('runtime')  IS NULL EXEC('CREATE SCHEMA runtime');
@@ -50,3 +54,13 @@ CREATE TABLE runtime.IngestionState (
     CONSTRAINT FK_IngestionState_Object FOREIGN KEY (object_id) REFERENCES metadata.IngestionObject (object_id)
 );
 GO
+
+-- ==========================================================================
+-- Kolumntillägg. Lägg nya block här, äldst överst. Ta aldrig bort gamla block.
+-- Ny kolumn ska vara NULL eller ha DEFAULT, eftersom raderna redan finns.
+--
+-- Exempel:
+-- IF COL_LENGTH('metadata.IngestionObject', 'page_size') IS NULL
+--     ALTER TABLE metadata.IngestionObject ADD page_size int NULL;
+-- GO
+-- ==========================================================================

@@ -21,6 +21,10 @@ jobs:
   deploy:
     # Körs bara efter merge till main, och bara om validate är grön.
     needs: validate
+    # Två deployer samtidigt kan ge blandat resultat. Köa i stället.
+    concurrency:
+      group: deploy-metadata
+      cancel-in-progress: false
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:

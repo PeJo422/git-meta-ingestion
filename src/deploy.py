@@ -3,23 +3,23 @@
     python src/deploy.py [--dry-run]
 
 Anslutning: miljövariabeln METADATA_DB_CONNECTION_STRING (ODBC connection string).
---dry-run jämför inte mot databasen utan visar vad som skulle skapas.
+Först körs database/schema.sql (idempotent), sedan upsertas metadata. Allt sker i en
+transaktion, så en deploy är antingen helt genomförd eller helt utebliven.
+--dry-run kopplar inte upp mot databasen utan visar vad som skulle publiceras.
 
-Skriver aldrig till runtime.*, och raderar aldrig något.
+Skriver aldrig data till runtime.*, och raderar aldrig något.
 """
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 
 from validate import DEFAULT_ROOT, load_and_validate
 
-SOURCE_COLS = ["source_type", "connection_ref", "config_json"]
-OBJECT_COLS = ["source_id", "source_schema", "source_table", "query_text",
-               "load_type", "watermark_column", "keys_json", "enabled"]
-
-
+# Kolumnerna som deploy skriver är nycklarna i dictarna nedan. En ny kolumn läggs till
+# här (och i database/schema.sql), ingen annan lista behöver ändras.
 def source_row(s):
     return {
         "source_type": s["type"],
@@ -41,8 +41,20 @@ def object_row(t):
     }
 
 
-def upsert(cur, table, key_col, key, cols, new, commit):
+def split_batches(sql):
+    """T-SQL-batcher separeras med GO, vilket bara klienter som sqlcmd förstår."""
+    batches = re.split(r"^\s*GO\s*$", sql, flags=re.MULTILINE | re.IGNORECASE)
+    return [b for b in (b.strip() for b in batches) if b]
+
+
+def apply_schema(cur, root):
+    for batch in split_batches((root / "database/schema.sql").read_text(encoding="utf-8")):
+        cur.execute(batch)
+
+
+def upsert(cur, table, key_col, key, new, commit):
     """INSERT, UPDATE eller ingen skrivning. Returnerar 'created' | 'updated' | 'unchanged'."""
+    cols = list(new)
     cur.execute(f"SELECT {', '.join(cols)} FROM {table} WHERE {key_col} = ?", key)
     old = cur.fetchone()
     if old is None:
@@ -83,6 +95,7 @@ def main(argv):
     print(f"Deploying commit {commit}\n")
 
     if args.dry_run:
+        print("SCHEMA database/schema.sql would be applied\n")
         for sid in sorted(sources):
             print(line("SOURCE", sid, "would be created/updated"))
         print()
@@ -95,13 +108,15 @@ def main(argv):
     conn = pyodbc.connect(os.environ["METADATA_DB_CONNECTION_STRING"], autocommit=False)
     try:
         cur = conn.cursor()
+        apply_schema(cur, DEFAULT_ROOT)
+        print("SCHEMA database/schema.sql applied\n")
         for sid in sorted(sources):
-            status = upsert(cur, "metadata.Source", "source_id", sid, SOURCE_COLS,
+            status = upsert(cur, "metadata.Source", "source_id", sid,
                             source_row(sources[sid]), commit)
             print(line("SOURCE", sid, status))
         print()
         for tid in sorted(tables):
-            status = upsert(cur, "metadata.IngestionObject", "object_id", tid, OBJECT_COLS,
+            status = upsert(cur, "metadata.IngestionObject", "object_id", tid,
                             object_row(tables[tid]), commit)
             print(line("OBJECT", tid, status))
 
